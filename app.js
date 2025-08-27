@@ -1,4 +1,5 @@
 // app.js — runs Python in a Web Worker via Pyodide (CDN)
+const BASE_HREF = new URL("./", window.location.href).href;
 const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const downloadsEl = document.getElementById("downloads");
@@ -24,17 +25,17 @@ useCfgBtn.onclick = () => {
 };
 
 function makeWorker() {
-  const code = `
-self.onmessage = async (e) => {
-  const { n, configBytes } = e.data;
+  const code = `self.onmessage = async (e) => {
+  const { n, configBytes, baseHref } = e.data;
   try {
     importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js");
     const pyodide = await loadPyodide();
     pyodide.setStdout({batched: (s)=> self.postMessage({type:"log", s})});
     pyodide.setStderr({batched: (s)=> self.postMessage({type:"log", s})});
 
-    // Write your Python file
-    const src = await (await fetch("fall_search_stdlib_v6_2_5_1.py")).text();
+    // Build absolute URL to the Python file using the page’s base
+    const pyUrl = new URL("fall_search_stdlib_v6_2_5_1.py", baseHref).href;
+    const src = await (await fetch(pyUrl)).text();
     pyodide.FS.writeFile("/fall_search.py", src);
 
     // Optional external config
@@ -48,45 +49,40 @@ self.onmessage = async (e) => {
 
     let py;
     if (useExternal) {
-      // Merge external over in-file CONFIG (strict=False)
-      py = \`
+      py = `
 import json
 cfg = fs.load_config_json("/ext_config.json", base=fs.CONFIG, strict=False)
-cfg["N_runs"] = \${n}
+cfg["N_runs"] = ${n}
 res = fs.run_from_config(cfg)
 json.dumps(res)
-\`;
+`;
     } else {
-      py = \`
+      py = `
 import json
-res = fs.run_from_config(fs.CONFIG | {"N_runs": \${n}})
+res = fs.run_from_config(fs.CONFIG | {"N_runs": ${n}})
 json.dumps(res)
-\`;
+`;
     }
 
     const out = await pyodide.runPythonAsync(py);
     const paths = JSON.parse(out);
 
-    // Utility to send files back
     function sendFile(p){
       try {
         const data = pyodide.FS.readFile(p);
         self.postMessage({type:"file", path:p, blob:data.buffer}, [data.buffer]);
-      } catch (err) {
-        // ignore missing
-      }
+      } catch {}
     }
-
     ["csv","json","geojson","kml","spiral_geojson"].forEach(k=>{
       if (paths[k]) sendFile(paths[k]);
     });
-
     self.postMessage({type:"done", runDir: paths.run_dir || ""});
   } catch (err) {
     self.postMessage({type:"log", s: "\\n[ERROR] " + (err?.message || String(err)) + "\\n"});
     self.postMessage({type:"done", runDir: ""});
   }
 };
+
   `;
   return new Worker(URL.createObjectURL(new Blob([code], { type: "text/javascript" })));
 }
@@ -120,7 +116,8 @@ async function run(n) {
   logEl.textContent = "";
   statusEl.textContent = "Running…";
   const w = ensureWorker();
-  w.postMessage({ n, configBytes: cfgBytes });
+  const BASE_HREF = new URL("./", window.location.href).href;  // << add
+  w.postMessage({ n, configBytes: cfgBytes, baseHref: BASE_HREF });  // << add baseHref
 }
 
 btn.onclick = () => run(Number(nInput.value || 500));
