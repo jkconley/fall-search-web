@@ -141,99 +141,199 @@ def drag_horizontal_accel(v_rel_x, v_rel_y, rho, Cd, A, mass):
     Fy = F_scalar * v_rel_y
     return Fx / mass, Fy / mass
 
+
+# ---- Integrator helpers (micro-refactors; behavior-preserving) -------------
+
+def _select_dt(speed, z, v_switch, z_switch, dt_fast, dt_slow):
+    """Choose integration step: fine when fast or high; coarse otherwise."""
+    return dt_fast if (speed > v_switch or z > z_switch) else dt_slow
+
+def _tumble_modulation(t, A_base, Cd_base, A_frac, Cd_frac, omega, phase):
+    """Optionally modulate A and Cd sinusoidally to emulate tumbling presentation."""
+    if omega and (A_frac != 0.0 or Cd_frac != 0.0):
+        ang = omega * t + phase
+        A_eff  = max(1e-6, A_base * (1.0 + A_frac * math.sin(ang)))
+        Cd_eff = max(0.01,  Cd_base * (1.0 + Cd_frac * math.cos(ang)))
+        return A_eff, Cd_eff
+    return A_base, Cd_base
+
+
 # ---- Integrator ------------------------------------------------------------
 
 def simulate_one_2d(run_params):
+    """
+    Integrate a 2D point-mass fall with drag and a height-dependent wind field
+    (plus optional OU gusts and tumbling-modulated drag) until ground impact.
+
+    The integrator is semi-implicit Euler: update velocity from acceleration,
+    then update position from (new) velocity. When z crosses the ground between
+    steps, a linear-in-z interpolation refines the landing time/position.
+
+    Args:
+      run_params (dict): Simulation parameters. Expected keys (not exhaustive):
+        # Object properties
+        - mass (float): Object mass [kg].
+        - A_base (float): Reference cross-sectional area [m^2].
+        - Cd_base (float): Reference drag coefficient [-].
+        - A_tumble_frac (float): Sinusoidal fractional modulation of area [-].
+        - Cd_tumble_frac (float): Sinusoidal fractional modulation of Cd [-].
+        - tumble_omega (float): Tumbling angular speed [rad/s].
+        - tumble_phase (float): Tumbling phase offset [rad].
+
+        # Wind model (@10 m reference) and gusts
+        - vref_ms (float): Reference wind speed at 10 m [m/s].
+        - wind_dir_met_deg (float): Wind direction (MET FROM) [deg].
+        - wind_alpha (float): Power-law shear exponent (≈1/7 over open terrain).
+        - gust_sigma (float): OU process intensity (std of stationary gusts).
+        - gust_tau (float): OU mean-reversion time constant [s].
+        - w_mean (float): Mean vertical air velocity (updraft/downdraft) [m/s].
+
+        # Initial state (release in local ENU: x=east, y=north, z=up)
+        - x0, y0 (float): Initial horizontal offsets [m].
+        - release_alt_m (float): Initial altitude above ground [m].
+        - initial_vx, initial_vy, initial_vz (float): Initial velocities [m/s].
+
+        # Time stepping / termination
+        - dt_slow (float): Coarse timestep [s].
+        - dt_fast (float): Fine timestep when fast or high [s].
+        - v_switch (float): Speed threshold switching to dt_fast [m/s].
+        - z_switch (float): Height threshold switching to dt_fast [m].
+        - max_time (float): Hard cap on simulated time [s].
+
+    Returns:
+      dict: Landing record with keys:
+        - x_e, y_n (float): Landing coordinates in meters (east, north).
+        - t_land (float): Time of landing [s] (interpolated if needed).
+        - landed (bool): True if z ≤ 0 encountered; False if max_time reached.
+        - interp (bool): True if final (x,y,t) was interpolated across ground.
+
+    Notes:
+      - Coordinates: local ENU with z up. Gravity acts in -z.
+      - Wind direction uses meteorological *FROM* convention; code converts to
+        an internal "toward" angle in the x/y frame.
+      - Air density is exponential in height. Drag force ~ ½ ρ Cd A |v_rel| v_rel.
+      - Tumbling (if enabled) modulates A and Cd with sin/cos at tumble_omega.
+      - OU gust model adds colored noise to horizontal wind components.
+      - Semi-implicit Euler is stable for this problem and inexpensive.
+    """
+    # --- Unpack frequently-used parameters (kept local for speed/readability) ---
     m = run_params['mass']
     A_base = run_params['A_base']
     Cd_base = run_params['Cd_base']
-    A_frac = run_params.get('A_tumble_frac', 0.0)
+
+    # Optional sinusoidal modulation of area/Cd to mimic tumbling presentation.
+    A_frac  = run_params.get('A_tumble_frac', 0.0)
     Cd_frac = run_params.get('Cd_tumble_frac', 0.0)
-    omega = run_params.get('tumble_omega', 0.0)
-    phase = run_params.get('tumble_phase', 0.0)
+    omega   = run_params.get('tumble_omega', 0.0)
+    phase   = run_params.get('tumble_phase', 0.0)
 
-    vref_ms = run_params['vref_ms']
+    # Wind & gust configuration
+    vref_ms          = run_params['vref_ms']                # wind speed @ 10 m
     wind_dir_met_deg = run_params['wind_dir_met_deg']
-    alpha = run_params.get('wind_alpha', 0.143)
-    gust_sigma = run_params.get('gust_sigma', 0.0)
-    gust_tau = run_params.get('gust_tau', 5.0)
-    air_vz_mean = run_params.get('w_mean', 0.0)
+    alpha            = run_params.get('wind_alpha', 0.143)  # shear exponent (1/7 ≈ 0.143)
+    gust_sigma       = run_params.get('gust_sigma', 0.0)
+    gust_tau         = run_params.get('gust_tau', 5.0)
+    w_mean           = run_params.get('w_mean', 0.0)        # mean vertical air motion
 
-    x = run_params.get('x0', 0.0)
-    y = run_params.get('y0', 0.0)
-    z = run_params['release_alt_m']
+    # Initial state (position in meters, velocity in m/s)
+    x  = run_params.get('x0', 0.0)
+    y  = run_params.get('y0', 0.0)
+    z  = run_params['release_alt_m']
     vx = run_params.get('initial_vx', 0.0)
     vy = run_params.get('initial_vy', 0.0)
     vz = run_params.get('initial_vz', 0.0)
 
-    dt_slow = run_params.get('dt_slow', 0.02)
-    dt_fast = run_params.get('dt_fast', 0.005)
+    # Time-stepping controls and termination
+    dt_slow  = run_params.get('dt_slow', 0.02)
+    dt_fast  = run_params.get('dt_fast', 0.005)
     v_switch = run_params.get('v_switch', 30.0)
     z_switch = run_params.get('z_switch', 100.0)
     max_time = run_params.get('max_time', 4000.0)
-    g_acc = 9.80665
-    base_theta = met_from_to_code_toward_rad(wind_dir_met_deg)
 
-    gust_u = 0.0
-    gust_v = 0.0
+    # Constants / precomputed
+    g_acc = 9.80665
+    # Convert MET FROM (compass deg) to internal "toward" angle (radians) in x/y.
+    wind_theta_toward = met_from_to_code_toward_rad(wind_dir_met_deg)
+
+    # Initialize OU gust state (horizontal components only; units m/s)
+    gust_u = 0.0  # east component
+    gust_v = 0.0  # north component
+
     t = 0.0
-    last_state = None
+    last_state = None  # (t, x, y, z) before the current step, for ground interpolation
+
+    # --- Main integration loop ---
     while t < max_time:
+        # If object is at/below ground, return exact final state for this step.
         if z <= 0.0:
             return {'x_e': x, 'y_n': y, 't_land': t, 'landed': True, 'interp': False}
 
+        # Choose time step adaptively:
         speed = math.sqrt(vx * vx + vy * vy + vz * vz)
-        dt = dt_fast if (speed > v_switch or z > z_switch) else dt_slow
+        dt = _select_dt(speed, z, v_switch, z_switch, dt_fast, dt_slow)
 
-        if omega and (A_frac != 0.0 or Cd_frac != 0.0):
-            ang = omega * t + phase
-            A_eff = max(1e-6, A_base * (1.0 + A_frac * math.sin(ang)))
-            Cd_eff = max(0.01, Cd_base * (1.0 + Cd_frac * math.cos(ang)))
-        else:
-            A_eff, Cd_eff = A_base, Cd_base
+        # --- Drag modifiers due to tumbling (if enabled) ---
+        A_eff, Cd_eff = _tumble_modulation(t, A_base, Cd_base, A_frac, Cd_frac, omega, phase)
 
-        v_profile = powerlaw_speed_at_height(vref_ms, z, zref=10.0, alpha=alpha)
-        wind_e = v_profile * math.cos(base_theta)
-        wind_n = v_profile * math.sin(base_theta)
+        # --- Wind field at current height ---
+        # Scale 10 m reference speed by power-law shear.
+        wind10_scaled = powerlaw_speed_at_height(vref_ms, z, zref=10.0, alpha=alpha)
+        wind_e = wind10_scaled * math.cos(wind_theta_toward)  # east (x) component, *toward*
+        wind_n = wind10_scaled * math.sin(wind_theta_toward)  # north (y) component
+
+        # --- OU gusts (colored noise) ---
         if gust_sigma > 0.0:
             gust_u = ou_gust_step(gust_u, dt, gust_sigma, gust_tau)
             gust_v = ou_gust_step(gust_v, dt, gust_sigma, gust_tau)
-        air_e = wind_e + gust_u
-        air_n = wind_n + gust_v
-        air_vz = air_vz_mean
 
+        # Air velocity vector at the object
+        air_e  = wind_e + gust_u
+        air_n  = wind_n + gust_v
+        air_vz = w_mean  # constant mean vertical motion of air parcel
+
+        # --- Relative velocity (object w.r.t. air) ---
         vrel_e = vx - air_e
         vrel_n = vy - air_n
         vrel_v = vz - air_vz
 
+        # Local air density from exponential model ρ(z).
         rho_local = air_density_exponential(z)
 
+        # --- Drag acceleration (horizontal) ---
         ax_d, ay_d = drag_horizontal_accel(vrel_e, vrel_n, rho_local, Cd_eff, A_eff, m)
+
+        # --- Drag acceleration (vertical) ---
         vrel_mag = math.sqrt(vrel_e * vrel_e + vrel_n * vrel_n + vrel_v * vrel_v)
         az_d = 0.0 if vrel_mag == 0.0 else (-0.5 * rho_local * Cd_eff * A_eff * vrel_mag * vrel_v) / m
 
+        # Total accelerations (gravity acts in -z)
         ax = ax_d
         ay = ay_d
         az = az_d - g_acc
 
+        # Preserve state before advancing for ground-crossing interpolation.
         last_state = (t, x, y, z)
 
+        # --- Semi-implicit Euler integration step ---
         vx += ax * dt
         vy += ay * dt
         vz += az * dt
-        x += vx * dt
-        y += vy * dt
-        z += vz * dt
-        t += dt
+        x  += vx * dt
+        y  += vy * dt
+        z  += vz * dt
+        t  += dt
 
+        # --- Ground-crossing refinement (linear in z between steps) ---
         if last_state and z <= 0.0:
             t0, x0, y0, z0 = last_state
             denom = (z0 - z)
-            s = 0.0 if denom == 0.0 else max(0.0, min(1.0, z0 / denom))
+            s = 0.0 if denom == 0.0 else max(0.0, min(1.0, z0 / denom))  # clamp to [0,1]
             x_land = x0 + s * (x - x0)
             y_land = y0 + s * (y - y0)
             t_land = t0 + s * (t - t0)
             return {'x_e': x_land, 'y_n': y_land, 't_land': t_land, 'landed': True, 'interp': True}
+
+    # If we exit the loop, we hit max_time without touchdown.
     return {'x_e': x, 'y_n': y, 't_land': t, 'landed': False, 'interp': False}
 
 # ---- Monte Carlo driver ----------------------------------------------------
