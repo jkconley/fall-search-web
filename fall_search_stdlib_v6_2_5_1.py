@@ -18,6 +18,63 @@ from datetime import datetime
 
 EARTH_METERS_PER_DEG_LAT = 111320.0
 
+# ---- Default CONFIG & CLI --------------------------------------------------
+
+def get_default_config():
+    return {'incident': {'name': 'Shahaed-136'},
+              'seed': 1337,
+              'N_runs': 1500,
+              'location': {
+                  'release_lat': 49.274565941333805,
+                  'release_lon': 11.80609661491095,
+                  'release_alt_m_agl': 61.0},
+              'object': {
+                  'mass': 0.95,
+                  'A_mean': 0.06,
+                  'Cd_mean': 0.35,
+                  'A_std': 0.15,
+                  'Cd_std': 1.8,
+                  'rho_A_Cd': 0.3,
+                  'A_tumble_frac': 0.4,
+                  'Cd_tumble_frac': 0.5,
+                  'tumble_omega_mean': 6.0,
+                  'tumble_omega_std': 3.0},
+              'winds': {
+                  'wind_speed_kph_mean': 10.0,
+                  'wind_speed_kph_std': 2.0,
+                  'wind_dir_met_from_mean': 0.0,
+                  'wind_dir_met_from_std': 0.0,
+                  'wind_alpha': 0.143,
+                  'gust_sigma': 1.5,
+                  'gust_tau': 5.0,
+                  'w_mean': 0.0},
+              'pre_release': {
+                  'enabled': True,
+                  'mode': 'glide_ratio', # Either 'time' or 'glide_ratio'
+                  'time_s_mean': 10.0,
+                  'time_s_std': 0.7,
+                  'groundspeed_kph_mean': 120.0,
+                  'groundspeed_kph_std': 8.0,
+                  'heading_met_toward_mean': 100.0,
+                  'heading_met_toward_std': 1.0,
+                  'glide_ratio_mean': 10.0,
+                  'glide_ratio_std': 0.2,
+                  'release_airspeed_kph_mean': 102.48,
+                  'release_airspeed_kph_std': 2.0},
+              'numerics': {
+                  'dt_slow': 0.02,
+                  'dt_fast': 0.005,
+                  'v_switch': 35.0,
+                  'z_switch': 150.0,
+                  'max_time': 6000.0,
+                  'cell_size_m': 50.0},
+              'outputs': {
+                  'containment_probs': [0.5, 0.9, 0.95],
+                  'use_kde_for_mode': True,
+                  'kde_bandwidth_m': 150.0},
+              'spiral': {'spacing_m': 50.0, 'step_m': 10.0}}
+
+
 # ---- JSON configuration loader (compatible with v5 schema) ----------------------------
 
 def _deep_merge(base: dict, overrides: dict) -> dict:
@@ -1230,61 +1287,6 @@ def run_from_config(CONFIG):
     print("—" * 64)
     return {'run_dir': run_dir, 'csv': csv_path, 'json': json_path, 'geojson': geo_path, 'kml': kml_path, 'spiral_geojson': spiral_geo_path}
 
-# ---- Default CONFIG & CLI --------------------------------------------------
-
-if __name__ == "__main__":
-    CONFIG = {'incident': {'name': 'Shahaed-136'},
-              'seed': 1337,
-              'N_runs': 1500,
-              'location': {
-                  'release_lat': 49.274565941333805,
-                  'release_lon': 11.80609661491095,
-                  'release_alt_m_agl': 61.0},
-              'object': {
-                  'mass': 0.95,
-                  'A_mean': 0.06,
-                  'Cd_mean': 0.35,
-                  'A_std': 0.15,
-                  'Cd_std': 1.8,
-                  'rho_A_Cd': 0.3,
-                  'A_tumble_frac': 0.4,
-                  'Cd_tumble_frac': 0.5,
-                  'tumble_omega_mean': 6.0,
-                  'tumble_omega_std': 3.0},
-              'winds': {
-                  'wind_speed_kph_mean': 10.0,
-                  'wind_speed_kph_std': 2.0,
-                  'wind_dir_met_from_mean': 0.0,
-                  'wind_dir_met_from_std': 0.0,
-                  'wind_alpha': 0.143,
-                  'gust_sigma': 1.5,
-                  'gust_tau': 5.0,
-                  'w_mean': 0.0},
-              'pre_release': {
-                  'enabled': True,
-                  'mode': 'glide_ratio', # Either 'time' or 'glide_ratio'
-                  'time_s_mean': 10.0,
-                  'time_s_std': 0.7,
-                  'groundspeed_kph_mean': 120.0,
-                  'groundspeed_kph_std': 8.0,
-                  'heading_met_toward_mean': 100.0,
-                  'heading_met_toward_std': 1.0,
-                  'glide_ratio_mean': 10.0,
-                  'glide_ratio_std': 0.2,
-                  'release_airspeed_kph_mean': 102.48,
-                  'release_airspeed_kph_std': 2.0},
-              'numerics': {
-                  'dt_slow': 0.02,
-                  'dt_fast': 0.005,
-                  'v_switch': 35.0,
-                  'z_switch': 150.0,
-                  'max_time': 6000.0,
-                  'cell_size_m': 50.0},
-              'outputs': {
-                  'containment_probs': [0.5, 0.9, 0.95],
-                  'use_kde_for_mode': True,
-                  'kde_bandwidth_m': 150.0},
-              'spiral': {'spacing_m': 50.0, 'step_m': 10.0}}
     print('Starting simulation (v6)\n')
     # Optional external config path
     json_path = "data/preset_configs/shahed_136_config.json"
