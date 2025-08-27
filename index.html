@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>fall_search — Pyodide</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: dark light; }
+    body{font-family:system-ui, sans-serif; margin:2rem; max-width:900px}
+    .row{display:flex; gap:1rem; align-items:center; flex-wrap:wrap}
+    button{padding:.6rem 1rem; border-radius:.6rem; border:1px solid #888; cursor:pointer}
+    input{padding:.4rem .6rem}
+    pre{background:#111; color:#0f0; padding:1rem; white-space:pre-wrap; border-radius:.6rem}
+    #downloads a{display:block; margin:.25rem 0}
+  </style>
+</head>
+<body>
+  <h1>fall_search — browser (Pyodide)</h1>
+
+  <div class="row">
+    <label>Runs N: <input id="n" type="number" value="500" min="10" step="10"/></label>
+    <button id="run">Run Simulation</button>
+    <button id="demo200">Quick 200</button>
+    <span id="status"></span>
+  </div>
+
+  <details style="margin-top:1rem">
+    <summary>Optional: external config JSON</summary>
+    <div class="row" style="margin-top:.5rem">
+      <input id="cfgfile" type="file" accept=".json"/>
+      <button id="useCfg">Use Config Above</button>
+      <span id="cfgname"></span>
+    </div>
+  </details>
+
+  <h3 style="margin-top:2rem">Downloads</h3>
+  <div id="downloads"></div>
+
+  <h3>Log</h3>
+  <pre id="log"></pre>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
